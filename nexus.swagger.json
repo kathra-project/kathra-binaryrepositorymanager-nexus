@@ -150,7 +150,7 @@
         "description" : "",
         "operationId" : "changePassword",
         "consumes" : [ "text/plain" ],
-        "produces" : [ "application/json" ],
+        "produces" : [ "text/plain, application/json" ],
         "parameters" : [ {
           "name" : "userId",
           "in" : "path",

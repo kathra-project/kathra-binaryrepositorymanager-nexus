@@ -20,11 +20,13 @@
 
 package org.kathra.binaryrepositorymanager.nexus.service;
 
+import com.google.common.collect.ImmutableList;
 import org.apache.camel.Exchange;
 import org.apache.camel.Processor;
 import org.apache.commons.lang3.StringUtils;
 import org.kathra.binaryrepositorymanager.nexus.Config;
 import org.kathra.binaryrepositorymanager.nexus.security.KeycloackSession;
+import org.kathra.core.model.Resource;
 import org.kathra.core.model.User;
 import org.kathra.nexus.client.model.ApiCreateUser;
 import org.kathra.nexus.client.model.ApiUser;
@@ -33,6 +35,7 @@ import org.kathra.utils.KathraSessionManager;
 
 import java.util.*;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 
 public class UserSync implements Processor {
 
@@ -62,12 +65,15 @@ public class UserSync implements Processor {
         logger.info("execute for user "+ user.getId());
         try {
             User userWidthDetails = usersClient.getUser(user.getId());
-            List<ApiUser> nexusUsers = nexusClient.getSecurityManagementUsersApi().getUsers(user.getId(), null);
+            List<ApiUser> nexusUsers = nexusClient.getSecurityManagementUsersApi().getUsers(user.getName(), null);
             if (nexusUsers.isEmpty()) {
                 ApiCreateUser nexusUserToCreated = new ApiCreateUser()
-                                                    .userId(userWidthDetails.getId())
-                                                    .firstName(userWidthDetails.getFirstName())
-                                                    .lastName(userWidthDetails.getLastName())
+                                                    .userId(userWidthDetails.getName())
+                                                    .firstName(Optional.ofNullable(userWidthDetails.getFirstName()).orElse("undefined"))
+                                                    .lastName(Optional.ofNullable(userWidthDetails.getLastName()).orElse("undefined"))
+                                                    .password(userWidthDetails.getPassword())
+                                                    .roles(ImmutableList.of("default"))
+                                                    .status(ApiCreateUser.StatusEnum.ACTIVE)
                                                     .emailAddress(userWidthDetails.getEmail());
                 nexusClient.getSecurityManagementUsersApi().createUser(nexusUserToCreated);
                 nexusClient.getSecurityManagementUsersApi().getUsers(user.getId(), null).get(0);
@@ -77,7 +83,7 @@ public class UserSync implements Processor {
                 throw new IllegalStateException("Not password defined for user:" + userWidthDetails.getName());
             }
 
-            nexusClient.getSecurityManagementUsersApi().changePassword(user.getId(), userWidthDetails.getPassword());
+            nexusClient.getSecurityManagementUsersApi().changePassword(user.getName(), userWidthDetails.getPassword());
         } catch (Exception e) {
             e.printStackTrace();
         }

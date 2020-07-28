@@ -29,7 +29,6 @@ import org.kathra.nexus.client.api.RepositoryManagementApi;
 import org.kathra.nexus.client.api.SecurityManagementPrivilegesApi;
 import org.kathra.nexus.client.api.SecurityManagementRolesApi;
 import org.kathra.nexus.client.api.SecurityManagementUsersApi;
-import org.kathra.nexus.client.auth.HttpBasicAuth;
 import org.kathra.nexus.client.model.*;
 import org.kathra.utils.KathraException;
 
@@ -58,10 +57,11 @@ public class NexusClient {
     this.server = server;
 
     defaultClient = Configuration.getDefaultApiClient();
-    defaultClient.setBasePath(server+"/api");
-    HttpBasicAuth basicAuth = (HttpBasicAuth) defaultClient.getAuthentication("basicAuth");
-    basicAuth.setUsername(this.username);
-    basicAuth.setPassword(this.password);
+    defaultClient.setBasePath(server+"/service/rest");
+    defaultClient.setUsername(this.username);
+    defaultClient.setPassword(this.password);
+    defaultClient.addDefaultHeader("Connection", "close");
+
     repositoryManagementApi.setApiClient(defaultClient);
     securityManagementRolesApi.setApiClient(defaultClient);
     securityManagementPrivilegesApi.setApiClient(defaultClient);
@@ -75,58 +75,68 @@ public class NexusClient {
     if (binaryRepository.getGroup() == null || StringUtils.isEmpty(binaryRepository.getGroup().getName())) {
       throw new KathraException("Group's name undefined", null, KathraException.ErrorCode.BAD_REQUEST);
     }
+    try {
+      HostedStorageAttributes storage = new HostedStorageAttributes();
+      storage.setWritePolicy(HostedStorageAttributes.WritePolicyEnum.ALLOW);
+      storage.blobStoreName("default");
+      storage.setStrictContentTypeValidation(false);
+      String repositoryName;
+      Optional<AbstractApiRepository> exist;
+      switch (binaryRepository.getType()) {
+        case JAVA:
+          repositoryName = binaryRepository.getGroup().getName().toLowerCase() + "-maven";
+          exist = getExistingRepositoryByName(repositoryName);
+          if (exist.isPresent()) {
+            return map(exist.get());
+          }
+          MavenHostedRepositoryApiRequest maven = new MavenHostedRepositoryApiRequest();
+          maven.setName(repositoryName);
+          maven.setOnline(true);
+          maven.setStorage(storage);
 
-    HostedStorageAttributes storage = new HostedStorageAttributes();
-    storage.setWritePolicy(HostedStorageAttributes.WritePolicyEnum.ALLOW);
-    String repositoryName;
-    Optional<AbstractApiRepository> exist;
-    switch (binaryRepository.getType()) {
-      case JAVA:
-        repositoryName = "maven-" + binaryRepository.getGroup().getName().toLowerCase();
-        exist = getExistingRepository(repositoryName);
-        if (exist.isPresent()) {
-          return map(exist.get());
-        }
-        MavenHostedRepositoryApiRequest maven = new MavenHostedRepositoryApiRequest();
-        maven.setName("maven-" + binaryRepository.getGroup().getName().toLowerCase());
-        maven.setOnline(true);
-        maven.setStorage(storage);
+          MavenAttributes mavenAttr = new MavenAttributes();
+          mavenAttr.setLayoutPolicy(MavenAttributes.LayoutPolicyEnum.PERMISSIVE);
+          mavenAttr.setVersionPolicy(MavenAttributes.VersionPolicyEnum.MIXED);
+          maven.maven(mavenAttr);
+          repositoryManagementApi.createRepository(maven);
+          break;
+        case PYTHON:
+          repositoryName = binaryRepository.getGroup().getName().toLowerCase() + "-pypi";
+          exist = getExistingRepositoryByName(repositoryName);
+          if (exist.isPresent()) {
+            return map(exist.get());
+          }
+          PypiHostedRepositoryApiRequest pypi = new PypiHostedRepositoryApiRequest();
+          pypi.setName(repositoryName);
+          pypi.setStorage(storage);
+          pypi.setOnline(true);
 
-        MavenAttributes mavenAttr = new MavenAttributes();
-        mavenAttr.setLayoutPolicy(MavenAttributes.LayoutPolicyEnum.PERMISSIVE);
-        mavenAttr.setVersionPolicy(MavenAttributes.VersionPolicyEnum.SNAPSHOT);
-        maven.maven(mavenAttr);
-        repositoryManagementApi.createRepository(maven);
-        break;
-      case PYTHON:
-        repositoryName = "pypi-" + binaryRepository.getGroup().getName().toLowerCase();
-        exist = getExistingRepository(repositoryName);
-        if (exist.isPresent()) {
-          return map(exist.get());
-        }
-        PypiHostedRepositoryApiRequest pypi = new PypiHostedRepositoryApiRequest();
-        pypi.setName(repositoryName);
-        pypi.setStorage(storage);
-        pypi.setOnline(true);
-
-        repositoryManagementApi.createRepository16(pypi);
-        break;
-      default:
-        throw new IllegalStateException("Not managed");
+          repositoryManagementApi.createRepository16(pypi);
+          break;
+        default:
+          throw new IllegalStateException("Not managed");
+      }
+      return map(repositoryManagementApi.getRepositories().stream().filter(repository -> repository.getName().equals(repositoryName)).findFirst().orElseThrow(() -> new IllegalStateException("Project should be created")));
+    } catch (Exception e) {
+        e.printStackTrace();
+        throw e;
     }
-
-    return map(repositoryManagementApi.getRepositories().stream().filter(repository -> repository.getName().equals(repositoryName)).findFirst().orElseThrow(() -> new IllegalStateException("Project should be created")));
   }
 
-  private Optional<AbstractApiRepository> getExistingRepository(String repositoryName) throws ApiException {
+  private Optional<AbstractApiRepository> getExistingRepositoryByName(String repositoryName) throws ApiException {
     return repositoryManagementApi.getRepositories().stream() .filter(repository ->repository.getName().equals(repositoryName)).findFirst();
+  }
+  private Optional<AbstractApiRepository> getExistingRepositoryByProviderId(String providerId) throws ApiException {
+    return repositoryManagementApi.getRepositories().stream() .filter(repository ->repository.getUrl().equals(providerId)).findFirst();
   }
 
   private BinaryRepository map(AbstractApiRepository abstractApiRepository) {
     BinaryRepository binaryRepository = new BinaryRepository()
                     .url(abstractApiRepository.getUrl())
                     .provider("nexus")
+                    .providerId(abstractApiRepository.getUrl())
                     .name(abstractApiRepository.getName());
+
     switch(abstractApiRepository.getFormat().toLowerCase()) {
       case "maven2":
         binaryRepository.setType(BinaryRepository.TypeEnum.JAVA);
@@ -142,8 +152,8 @@ public class NexusClient {
     return repositoryManagementApi.getRepositories().parallelStream().map(this::map).collect(Collectors.toList());
   }
 
-  private RoleXOResponse getOrInitRole(String roleName, AbstractApiRepository repository, RoleEnum role) throws ApiException {
-    String nexusRoleName = roleName+"_"+role.name().toLowerCase();
+  private RoleXOResponse getOrInitRole(String memberType, AbstractApiRepository repository, RoleEnum role) throws ApiException {
+    String nexusRoleName = repository.getName()+"_"+role.name().toLowerCase()+"_"+memberType;
     RoleXOResponse roleXOResponse;
     Optional<RoleXOResponse> roleFound = securityManagementRolesApi.getRoles(null).stream().filter(roleXo -> roleXo.getId().equals(nexusRoleName)).findFirst();
     if (roleFound.isEmpty()) {
@@ -164,7 +174,7 @@ public class NexusClient {
         privilegesExpected.add("nx-repository-admin-" + repository.getFormat() + "-" + repository.getName()+"-*");
     }
 
-    List<ApiPrivilege> privilegesToDefine = securityManagementPrivilegesApi.getPrivileges().stream().filter(apiPrivilege -> privilegesExpected.contains(apiPrivilege)).collect(Collectors.toList());
+    List<ApiPrivilege> privilegesToDefine = securityManagementPrivilegesApi.getPrivileges().stream().filter(apiPrivilege -> privilegesExpected.contains(apiPrivilege.getName())).collect(Collectors.toList());
 
     if (privilegesToDefine.size() != privilegesExpected.size()) {
       throw new IllegalStateException("Unable to find all privileges");
@@ -183,7 +193,7 @@ public class NexusClient {
 
 
   public void addRepositoryMembership(String providerId, Membership binaryRepositoryMembership) throws ApiException, KathraException {
-    Optional<AbstractApiRepository> repository = getExistingRepository(providerId);
+    Optional<AbstractApiRepository> repository = getExistingRepositoryByProviderId(providerId);
     if (repository.isEmpty()) {
       throw new KathraException("repository with name '"+providerId+"' not found", null, KathraException.ErrorCode.BAD_REQUEST);
     }
@@ -193,15 +203,17 @@ public class NexusClient {
         getOrInitRole(binaryRepositoryMembership.getMemberName(),repository.get(), binaryRepositoryMembership.getRole());
       case USER:
         RoleXOResponse userRole = getOrInitRole("user",repository.get(), binaryRepositoryMembership.getRole());
-        List<ApiUser> users = securityManagementUsersApi.getUsers(binaryRepositoryMembership.getMemberName(), null);
-        ApiUser user = users.get(0);
-        user.getRoles().add(userRole.getId());
-        securityManagementUsersApi.updateUser(user.getUserId(), user);
+        Optional<ApiUser> users = securityManagementUsersApi.getUsers(null, null).stream().filter(u -> u.getUserId().equals(binaryRepositoryMembership.getMemberName())).findFirst();
+        if (users.isEmpty()) {
+          throw new KathraException("Member with userId '"+binaryRepositoryMembership.getMemberName()+"' not found", null, KathraException.ErrorCode.BAD_REQUEST);
+        }
+        users.get().getRoles().add(userRole.getId());
+        securityManagementUsersApi.updateUser(users.get().getUserId(), users.get());
     }
   }
 
   public List<Membership> getMemberships(String providerId) throws ApiException, KathraException {
-    Optional<AbstractApiRepository> repository = getExistingRepository(providerId);
+    Optional<AbstractApiRepository> repository = getExistingRepositoryByProviderId(providerId);
     if (repository.isEmpty()) {
       throw new KathraException("repository with name '"+providerId+"' not found", null, KathraException.ErrorCode.BAD_REQUEST);
     }

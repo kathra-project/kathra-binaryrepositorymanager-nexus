@@ -20,8 +20,8 @@
 package org.kathra.binaryrepositorymanager.nexus.controller;
 
 import org.kathra.binaryrepositorymanager.nexus.Config;
-import org.kathra.binaryrepositorymanager.nexus.model.Credential;
-import org.kathra.binaryrepositorymanager.nexus.service.BinaryRepositoryManagerService;
+import org.kathra.binaryrepositorymanager.model.Credential;
+import org.kathra.binaryrepositorymanager.service.BinaryRepositoryManagerService;
 import org.kathra.binaryrepositorymanager.nexus.service.NexusClient;
 import org.kathra.core.model.BinaryRepository;
 import org.kathra.core.model.Membership;
